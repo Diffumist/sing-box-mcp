@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sing-box-mcp"
+version = "0.1.0"
+description = "MCP server for querying sing-box documentation"
+readme = "README.md"
+requires-python = ">=3.11"
+keywords = ["mcp", "sing-box", "documentation", "llm"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Documentation",
+    "Topic :: Internet",
+    "Topic :: Software Development :: Documentation",
+]
+dependencies = [
+    "fastmcp>=3.2.0",
+    "requests>=2.31.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.6",
+    "mypy>=1.10",
+    "types-requests>=2.31",
+    "build>=1.2",
+    "twine>=6.0",
+]
+
+[project.scripts]
+sing-box-mcp = "singbox_mcp.server:main"
+
+[tool.setuptools.packages.find]
+include = ["singbox_mcp*"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

@@ -85,7 +85,10 @@ def validate_args(action: str, lang: str, version: str, limit: int) -> str:
     if action not in VALID_ACTIONS:
         return valid_actions_message()
     if lang not in SUPPORTED_LANGS:
-        return "Invalid lang. Use one of: en, zh.\nExample: singbox_docs(action=\"search\", query=\"dns\", lang=\"en\")"
+        return (
+            "Invalid lang. Use one of: en, zh.\n"
+            'Example: singbox_docs(action="search", query="dns", version="1.14.0", lang="en")'
+        )
     if version != DEFAULT_VERSION and not is_explicit_version(version):
         return 'Invalid version. Use "latest" for index operations or an explicit sing-box version like "1.14.0".'
     if action in {"search", "info", "examples"} and version == DEFAULT_VERSION:
@@ -105,8 +108,8 @@ def valid_actions_message() -> str:
     return (
         "Invalid action. Use one of: search, info, list, examples, stats, refresh.\n"
         "Examples:\n"
-        '- singbox_docs(action="search", query="hysteria2 outbound")\n'
-        '- singbox_docs(action="info", query="configuration/outbound/hysteria2")\n'
+        '- singbox_docs(action="search", query="hysteria2 outbound", version="1.14.0")\n'
+        '- singbox_docs(action="info", query="configuration/outbound/hysteria2", version="1.14.0")\n'
         '- singbox_docs(action="list", section="outbound")'
     )
 
@@ -115,14 +118,14 @@ def missing_index_message(lang: str) -> str:
     return (
         f"No local sing-box documentation index found for lang={lang}.\n"
         'Build it with: singbox_docs(action="refresh")\n'
-        'Or query directly with: singbox_docs(action="search", query="dns")'
+        'Or query directly with: singbox_docs(action="search", query="dns", version="1.14.0")'
     )
 
 
 def route_search(index: DocsIndex, *, query: str, section: str, version: str, limit: int) -> str:
     if not query.strip():
-        return 'Missing query. Example: singbox_docs(action="search", query="hysteria2 outbound")'
-    results = index.search(query=query, section=section, limit=limit)
+        return 'Missing query. Example: singbox_docs(action="search", query="hysteria2 outbound", version="1.14.0")'
+    results = index.search_results(query=query, section=section, limit=limit)
     if not results:
         sections = ", ".join(index.sections()[:12])
         return (
@@ -131,20 +134,29 @@ def route_search(index: DocsIndex, *, query: str, section: str, version: str, li
             'Example: singbox_docs(action="list", section="outbound")'
         )
     lines = [f'Results for "{query}" ({len(results)} shown)', f"Target sing-box version: {version}", provenance_line(index)]
-    for number, (score, page) in enumerate(results, start=1):
+    for number, result in enumerate(results, start=1):
+        page = result.page
         headings = ", ".join(page.headings[:5])
+        matched_fields = ", ".join(result.matched_fields)
+        matched_headings = ", ".join(result.matched_headings[:5])
         lines.append(f"{number}. {page.title}")
         lines.append(f"   Path: {page.path}")
         lines.append(f"   Source: {page.source_url}")
-        lines.append(f"   Score: {score}")
+        lines.append(f"   Score: {result.score}")
+        if matched_fields:
+            lines.append(f"   Matched fields: {matched_fields}")
+        if matched_headings:
+            lines.append(f"   Matched headings: {matched_headings}")
         if headings:
             lines.append(f"   Headings: {headings}")
+        if result.snippet:
+            lines.append(f"   Snippet: {result.snippet}")
     return "\n".join(lines)
 
 
 def route_info(index: DocsIndex, *, query: str, version: str) -> str:
     if not query.strip():
-        return 'Missing query. Example: singbox_docs(action="info", query="configuration/outbound/hysteria2")'
+        return 'Missing query. Example: singbox_docs(action="info", query="configuration/outbound/hysteria2", version="1.14.0")'
     page = index.find_page(query)
     if page is None:
         nearby = index.search(query=query, limit=5)
@@ -153,7 +165,7 @@ def route_info(index: DocsIndex, *, query: str, version: str) -> str:
             lines.append("Nearby pages:")
             for _, candidate in nearby:
                 lines.append(f"- {candidate.path}: {candidate.title}")
-        lines.append('Example: singbox_docs(action="search", query="hysteria2")')
+        lines.append('Example: singbox_docs(action="search", query="hysteria2", version="1.14.0")')
         return "\n".join(lines)
     return format_page_info(index, page, target_version=version)
 
@@ -176,13 +188,13 @@ def route_list(index: DocsIndex, *, section: str, limit: int) -> str:
 
 def route_examples(index: DocsIndex, *, query: str, section: str, version: str, limit: int) -> str:
     if not query.strip():
-        return 'Missing query. Example: singbox_docs(action="examples", query="hysteria2 outbound")'
+        return 'Missing query. Example: singbox_docs(action="examples", query="hysteria2 outbound", version="1.14.0")'
     results = index.search(query=query, section=section, limit=limit)
     pages = [page for _, page in results if page.examples]
     if not pages:
         return (
             f'No official examples found for "{query}".\n'
-            'Try: singbox_docs(action="info", query="configuration/outbound/hysteria2")'
+            'Try: singbox_docs(action="info", query="configuration/outbound/hysteria2", version="1.14.0")'
         )
     lines = [f'Official examples for "{query}"', f"Target sing-box version: {version}", provenance_line(index)]
     shown = 0
@@ -259,7 +271,7 @@ def create_mcp() -> Any | None:
         return None
 
     fastmcp_class = getattr(fastmcp_module, "FastMCP")
-    mcp = fastmcp_class(name="sing-box-mcp", instructions=TOOL_INSTRUCTIONS, version="0.1.0")
+    mcp = fastmcp_class(name="sing-box-mcp", instructions=TOOL_INSTRUCTIONS, version="0.2.0")
 
     @mcp.tool
     async def singbox_docs(

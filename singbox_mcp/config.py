@@ -16,7 +16,7 @@ DEFAULT_LIMIT = 20
 MAX_LIMIT = 50
 
 REQUEST_TIMEOUT_SECONDS = 20
-USER_AGENT = "sing-box-mcp/0.1.0 (+https://sing-box.sagernet.org/)"
+USER_AGENT = "sing-box-mcp/0.2.0 (+https://sing-box.sagernet.org/)"
 
 REFRESH_PAGE_LIMIT = 250
 

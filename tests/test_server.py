@@ -50,6 +50,14 @@ def test_search_routes_to_index() -> None:
     assert "Target sing-box version: 1.14.0" in response
     assert "configuration/outbound/hysteria2" in response
     assert "Source: https://sing-box.sagernet.org/configuration/outbound/hysteria2/" in response
+    assert "Snippet:" in response
+
+
+def test_search_response_includes_structured_matches() -> None:
+    response = handle_singbox_docs("search", query="tls", version="1.14.0", docs_index=fixture_index())
+
+    assert "Matched fields: tls" in response
+    assert "Matched headings: tls" in response
 
 
 def test_info_returns_page_details() -> None:
@@ -92,3 +100,21 @@ def test_invalid_action_includes_examples() -> None:
 
     assert "Invalid action" in response
     assert 'singbox_docs(action="search"' in response
+    assert 'singbox_docs(action="search", query="hysteria2 outbound", version="1.14.0")' in response
+    assert 'singbox_docs(action="info", query="configuration/outbound/hysteria2", version="1.14.0")' in response
+
+
+def test_content_query_help_examples_include_explicit_version() -> None:
+    index = fixture_index()
+
+    responses = [
+        handle_singbox_docs("search", query="", version="1.14.0", docs_index=index),
+        handle_singbox_docs("info", query="", version="1.14.0", docs_index=index),
+        handle_singbox_docs("info", query="missing page", version="1.14.0", docs_index=index),
+        handle_singbox_docs("examples", query="", version="1.14.0", docs_index=index),
+        handle_singbox_docs("examples", query="dns", version="1.14.0", docs_index=index),
+        handle_singbox_docs("search", query="dns", lang="bad", version="1.14.0", docs_index=index),
+    ]
+
+    for response in responses:
+        assert 'version="1.14.0"' in response

@@ -72,6 +72,28 @@ def test_document_page_from_html_extracts_article_text_headings_and_examples() -
     assert page.examples[0].startswith("{")
 
 
+def test_document_page_from_html_preserves_full_body_text_for_indexing() -> None:
+    long_prefix = "x" * 8500
+    html = f"""
+    <html><body>
+      <article class="md-content__inner md-typeset">
+        <h1>Long Page</h1>
+        <p>{long_prefix}</p>
+        <p>late_search_marker</p>
+      </article>
+    </body></html>
+    """
+
+    page = document_page_from_html(
+        html,
+        url="https://sing-box.sagernet.org/configuration/dns/long-page/",
+        lang="en",
+    )
+
+    assert "late_search_marker" in page.body_text
+    assert not page.body_text.endswith("...")
+
+
 def test_docs_index_search_and_find_page() -> None:
     index = DocsIndex(
         pages=[
@@ -98,3 +120,95 @@ def test_docs_index_search_and_find_page() -> None:
     assert index.search("hysteria2 server", section="outbound", limit=5)[0][1].path == (
         "configuration/outbound/hysteria2"
     )
+
+
+def test_search_results_include_field_matches_and_snippets() -> None:
+    index = DocsIndex(
+        pages=[
+            DocumentPage(
+                path="configuration/inbound/tun",
+                title="Tun",
+                lang="en",
+                section="inbound",
+                headings=["Structure", "Fields", "server_port"],
+                fields=["server_port"],
+                body_text="Tun\nFields\nserver_port\nThe listen port used by the inbound.",
+                examples=[],
+                source_url="https://sing-box.sagernet.org/configuration/inbound/tun/",
+                lastmod="2026-04-28",
+            )
+        ],
+        lang="en",
+        version="latest",
+        source="https://sing-box.sagernet.org/sitemap.xml",
+        fetched_at="2026-05-10T00:00:00+00:00",
+    )
+
+    result = index.search_results("server_port", limit=1)[0]
+
+    assert result.page.path == "configuration/inbound/tun"
+    assert result.matched_fields == ["server_port"]
+    assert "The listen port used by the inbound." in result.snippet
+
+
+def test_query_normalization_supports_dotted_paths_and_aliases() -> None:
+    index = DocsIndex(
+        pages=[
+            DocumentPage(
+                path="configuration/dns/server/https",
+                title="HTTPS",
+                lang="en",
+                section="dns",
+                headings=["DNS over HTTPS", "server"],
+                fields=["server"],
+                body_text="DNS over HTTPS server configuration.",
+                examples=[],
+                source_url="https://sing-box.sagernet.org/configuration/dns/server/https/",
+                lastmod="2026-04-28",
+            )
+        ],
+        lang="en",
+        version="latest",
+        source="https://sing-box.sagernet.org/sitemap.xml",
+        fetched_at="2026-05-10T00:00:00+00:00",
+    )
+
+    assert index.find_page("dns.server.https").path == "configuration/dns/server/https"
+    assert index.search_results("doh", limit=1)[0].page.path == "configuration/dns/server/https"
+
+
+def test_search_rerank_prefers_configuration_pages() -> None:
+    index = DocsIndex(
+        pages=[
+            DocumentPage(
+                path="installation/package-manager",
+                title="Package Manager",
+                lang="en",
+                section="installation",
+                headings=["DNS"],
+                fields=[],
+                body_text="dns dns dns dns dns outbound",
+                examples=[],
+                source_url="https://sing-box.sagernet.org/installation/package-manager/",
+                lastmod="2026-04-28",
+            ),
+            DocumentPage(
+                path="configuration/dns/server/https",
+                title="HTTPS",
+                lang="en",
+                section="dns",
+                headings=["Fields"],
+                fields=["server"],
+                body_text="DNS server configuration.",
+                examples=[],
+                source_url="https://sing-box.sagernet.org/configuration/dns/server/https/",
+                lastmod="2026-04-28",
+            ),
+        ],
+        lang="en",
+        version="latest",
+        source="https://sing-box.sagernet.org/sitemap.xml",
+        fetched_at="2026-05-10T00:00:00+00:00",
+    )
+
+    assert index.search_results("dns server", limit=2)[0].page.path == "configuration/dns/server/https"

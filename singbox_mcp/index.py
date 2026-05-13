@@ -11,8 +11,15 @@ import xml.etree.ElementTree as ET
 import requests
 
 from .config import INDEX_CACHE_DIR, REFRESH_PAGE_LIMIT, REQUEST_TIMEOUT_SECONDS, SITEMAP_URL, USER_AGENT
-from .utils import extract_article, normalize_doc_path, path_to_section, summarize_text, tokenize
+from .utils import extract_article, normalize_doc_path, path_to_section, tokenize
 from .versioning import AvailabilityNote
+
+QUERY_ALIASES = {
+    "doh": ["dns", "https"],
+    "dot": ["dns", "tls"],
+    "doq": ["dns", "quic"],
+    "hy2": ["hysteria2"],
+}
 
 
 @dataclass(frozen=True)
@@ -28,6 +35,15 @@ class DocumentPage:
     source_url: str
     lastmod: str
     field_availability: dict[str, list[AvailabilityNote]] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class SearchResult:
+    score: int
+    page: DocumentPage
+    snippet: str
+    matched_fields: list[str]
+    matched_headings: list[str]
 
 
 @dataclass(frozen=True)
@@ -69,12 +85,7 @@ class DocsIndex:
         path = normalize_doc_path(query)
         if not path:
             path = "home"
-        candidates = [
-            path,
-            f"configuration/{path}",
-            path.replace("_", "-"),
-            path.replace("-", "_"),
-        ]
+        candidates = path_candidates(path)
         for candidate in candidates:
             for page in self.pages:
                 if page.path == candidate:
@@ -92,49 +103,194 @@ class DocsIndex:
         )
 
     def search(self, query: str, section: str = "", limit: int = 20) -> list[tuple[int, DocumentPage]]:
-        tokens = tokenize(query)
+        return [(result.score, result.page) for result in self.search_results(query=query, section=section, limit=limit)]
+
+    def search_results(self, query: str, section: str = "", limit: int = 20) -> list[SearchResult]:
+        tokens = expand_query_tokens(query)
         if not tokens:
             return []
-        section_filter = section.strip().lower().replace("_", "-")
-        scored: list[tuple[int, DocumentPage]] = []
+        section_filter = normalize_section_filter(section)
+        results: list[SearchResult] = []
         for page in self.pages:
             if section_filter and page.section.replace("_", "-") != section_filter:
                 continue
-            score = score_page(page, tokens, query)
-            if score > 0:
-                scored.append((score, page))
-        scored.sort(key=lambda item: (-item[0], item[1].path))
-        return scored[:limit]
+            result = score_page(page, tokens, query)
+            if result is not None:
+                results.append(result)
+        results.sort(key=lambda result: (-result.score, path_rank(result.page), result.page.path))
+        return results[:limit]
 
 
-def score_page(page: DocumentPage, tokens: list[str], query: str) -> int:
-    title = page.title.lower()
-    path = page.path.lower()
-    headings = " ".join(page.headings).lower()
-    fields = " ".join(page.fields).lower()
-    availability = " ".join(note.note for notes in page.field_availability.values() for note in notes).lower()
-    body = page.body_text.lower()
-    phrase = query.strip().lower()
+def path_candidates(path: str) -> list[str]:
+    normalized = normalize_query_path(path)
+    variants = [
+        normalized,
+        f"configuration/{normalized}",
+        normalized.replace("_", "-"),
+        normalized.replace("-", "_"),
+    ]
+    if normalized.startswith("configuration/"):
+        variants.append(normalized.removeprefix("configuration/"))
+    return dedupe([variant.strip("/") for variant in variants if variant.strip("/")])
+
+
+def normalize_query_path(value: str) -> str:
+    return normalize_doc_path(value).lower().replace(".", "/").replace("_", "-").strip("/")
+
+
+def normalize_section_filter(value: str) -> str:
+    section = normalize_query_path(value)
+    if section.startswith("configuration/"):
+        parts = section.split("/")
+        if len(parts) > 1:
+            return parts[1]
+    return section
+
+
+def expand_query_tokens(query: str) -> list[str]:
+    raw_tokens = tokenize(query)
+    expanded: list[str] = []
+    for token in raw_tokens:
+        normalized = token.lower().replace("_", "-")
+        expanded.append(normalized)
+        expanded.extend(part for part in normalized.replace(".", "-").split("-") if part)
+        expanded.extend(QUERY_ALIASES.get(normalized, []))
+    return dedupe(expanded)
+
+
+def score_page(page: DocumentPage, tokens: list[str], query: str) -> SearchResult | None:
+    phrase = normalize_text_for_search(query)
+    title = normalize_text_for_search(page.title)
+    path = normalize_text_for_search(page.path)
+    section = normalize_text_for_search(page.section)
+    body = normalize_text_for_search(page.body_text)
+    availability = normalize_text_for_search(
+        " ".join(note.note for notes in page.field_availability.values() for note in notes)
+    )
+
+    matched_fields = matched_values(page.fields, tokens, phrase)
+    matched_headings = matched_values(page.headings, tokens, phrase)
 
     score = 0
     if phrase and phrase in title:
-        score += 30
+        score += 80
     if phrase and phrase in path:
-        score += 20
+        score += 70
+    if phrase and phrase in normalize_text_for_search(" ".join(page.fields)):
+        score += 45
+    if phrase and phrase in normalize_text_for_search(" ".join(page.headings)):
+        score += 35
+
     for token in tokens:
-        if token in title:
-            score += 10
+        token_score = 0
+        if token == title:
+            token_score += 60
+        elif token in title:
+            token_score += 28
+        if token == page.section.replace("_", "-"):
+            token_score += 24
+        elif token in section:
+            token_score += 12
         if token in path:
-            score += 8
-        if token in fields:
-            score += 6
+            token_score += 22
+        if any(token == normalize_text_for_search(field) for field in page.fields):
+            token_score += 40
+        elif any(token in normalize_text_for_search(field) for field in page.fields):
+            token_score += 18
+        if any(token == normalize_text_for_search(heading) for heading in page.headings):
+            token_score += 28
+        elif any(token in normalize_text_for_search(heading) for heading in page.headings):
+            token_score += 12
         if token in availability:
-            score += 5
-        if token in headings:
-            score += 4
+            token_score += 8
         if token in body:
-            score += 1
-    return score
+            token_score += 2
+        score += token_score
+
+    if not matched_fields and not matched_headings and score <= 0:
+        return None
+
+    snippet = best_snippet(page, tokens, matched_fields, matched_headings)
+    return SearchResult(
+        score=score,
+        page=page,
+        snippet=snippet,
+        matched_fields=matched_fields,
+        matched_headings=matched_headings,
+    )
+
+
+def normalize_text_for_search(value: str) -> str:
+    return " ".join(tokenize(value.replace("/", " ").replace("_", " ").replace("-", " ").replace(".", " ")))
+
+
+def matched_values(values: list[str], tokens: list[str], phrase: str) -> list[str]:
+    matches: list[str] = []
+    for value in values:
+        normalized = normalize_text_for_search(value)
+        if phrase and phrase in normalized:
+            matches.append(value)
+            continue
+        if any(token in normalized for token in tokens):
+            matches.append(value)
+    return matches[:8]
+
+
+def best_snippet(page: DocumentPage, tokens: list[str], fields: list[str], headings: list[str]) -> str:
+    field_snippet = snippet_after_anchor(page.body_text, fields)
+    if field_snippet:
+        return field_snippet
+    heading_snippet = snippet_after_anchor(page.body_text, headings)
+    if heading_snippet:
+        return heading_snippet
+    for line in clean_snippet_lines(page.body_text):
+        normalized = normalize_text_for_search(line)
+        if any(token in normalized for token in tokens):
+            return truncate_snippet(line)
+    return truncate_snippet(page.body_text)
+
+
+def snippet_after_anchor(body_text: str, anchors: list[str]) -> str:
+    if not anchors:
+        return ""
+    lines = clean_snippet_lines(body_text)
+    normalized_anchors = {normalize_text_for_search(anchor) for anchor in anchors}
+    for index, line in enumerate(lines):
+        if normalize_text_for_search(line) not in normalized_anchors:
+            continue
+        context = " ".join(lines[index : index + 4])
+        return truncate_snippet(context)
+    return ""
+
+
+def clean_snippet_lines(value: str) -> list[str]:
+    return [line.strip() for line in value.splitlines() if line.strip()]
+
+
+def truncate_snippet(value: str, max_chars: int = 260) -> str:
+    text = " ".join(value.split())
+    if len(text) <= max_chars:
+        return text
+    return f"{text[:max_chars].rsplit(' ', 1)[0]}..."
+
+
+def path_rank(page: DocumentPage) -> int:
+    if page.path.startswith("configuration/"):
+        return 0
+    if page.section in {"installation", "migration"}:
+        return 2
+    return 1
+
+
+def dedupe(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result
 
 
 def cache_path(lang: str, version: str) -> Path:
@@ -258,7 +414,7 @@ def document_page_from_html(html: str, *, url: str, lang: str, lastmod: str = ""
         section=path_to_section(path),
         headings=headings,
         fields=fields,
-        body_text=summarize_text(body_text, max_chars=8000),
+        body_text=body_text,
         examples=examples[:10],
         source_url=url,
         lastmod=lastmod,
